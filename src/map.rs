@@ -4,6 +4,7 @@ use crate::arena::ArenaWrapper;
 use crate::*;
 use either::{Either, Left, Right};
 use std::borrow::Borrow;
+use std::fmt::Debug;
 use std::hash::{BuildHasher, Hash, Hasher};
 use typed_arena::{Arena, SubArenaBuilder};
 
@@ -59,12 +60,13 @@ impl<'a, K, V> ScopedMap<'a, K, V> {
     }
 }
 
-impl<'a, K, V, S: 'a> ScopedMap<'a, K, V, S>
+impl<'a, K: 'static, V: 'static, S: 'static> ScopedMap<'a, K, V, S>
 where
     K: Hash + Eq,
     S: BuildHasher,
+    K: Debug,
 {
-    pub fn lookup<Q>(&self, key: &Q) -> Option<&V>
+    pub fn lookup<'map, 'key, Q>(&'map self, key: &'key Q) -> Option<&'map V>
     where
         K: Borrow<Q>,
         Q: Hash + Eq,
@@ -91,14 +93,30 @@ where
         let hash = Self::hash(&self.hasher, &key);
         let (item, depth) =
             Self::get_item_mut(&mut self.root, self.generation, &self.block_arena, hash);
-        if let Some(mut entry) = item.entry() {
+        if let Some(entry) = item.entry() {
             // SAFETY: OK to immutably borrow
-            if unsafe { entry.as_ref().generation == self.generation && entry.as_ref().key == key }
-            {
-                // SAFETY: ok to mutably borrow since it's in the same generation
-                unsafe {
-                    entry.as_mut().key = key;
-                    entry.as_mut().value = value;
+            if unsafe { entry.as_ref().key == key } {
+                // Update the entry with the new value
+
+                // SAFETY: lifetime appropriately constrained
+                let e: Either<&'temp _, &'temp mut _> =
+                    unsafe { Entry::from_ptr(entry, self.generation) };
+                match e {
+                    Left(_immutable) => {
+                        // Make a new entry -- we don't own this one
+                        let new_entry = self.entry_arena.alloc(Entry {
+                            generation: self.generation,
+                            key,
+                            value,
+                        });
+
+                        *item = ItemRep::from_entry(new_entry);
+                    }
+                    Right(mutable) => {
+                        // This entry belongs to our generation, update it in place
+                        mutable.key = key;
+                        mutable.value = value;
+                    }
                 }
             } else {
                 // SAFETY: OK to immutably borrow
@@ -115,6 +133,7 @@ where
                 let mut old_hash_rest = Self::hash(&self.hasher, &old_entry.key) >> depth;
                 while depth < 64 {
                     if new_hash_rest == old_hash_rest {
+                        eprintln!("{:?} and {:?} collided", &old_entry.key, &new_entry.key);
                         todo!("TODO: handle hash collisions");
                     }
                     let mut new_block = self.block_arena.alloc(Block::empty(self.generation));

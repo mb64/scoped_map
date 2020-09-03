@@ -13,7 +13,7 @@ use typed_arena::Arena;
 ///
 /// It's stored in `ItemRep<'a>` using a tagged pointer, but accessible with the `.item()` and
 /// `.set()` methods
-pub struct ItemRep<'a, K, V> {
+pub struct ItemRep<'a, K: 'static, V: 'static> {
     ptr: *mut (),
     _marker: PhantomData<(&'a Block<'a, K, V>, &'a Entry<K, V>)>,
 }
@@ -77,15 +77,14 @@ impl<'a, K, V> Default for ItemRep<'a, K, V> {
     }
 }
 
-pub struct Block<'a, K, V> {
+pub struct Block<'a, K: 'static, V: 'static> {
     pub generation: u32,
     pub entries: [ItemRep<'a, K, V>; BLOCK_SIZE],
 }
 
-impl<'a, K, V> Block<'a, K, V> {
-    /// This should typically be safe to call
-    /// TODO Maybe make a `BlockRef` and `EntryRef` type, that allows to do it safely?
-    /// still requires correct passing of generations, so nah :/
+impl<'a, K: 'static, V: 'static> Block<'a, K, V> {
+    /// Unsafe: specify a specific lifetime when you call, you surely don't actually own it for the
+    /// full 'a
     pub unsafe fn from_ptr(ptr: NonNull<Self>, cur_gen: u32) -> Either<&'a Self, &'a mut Self> {
         let block_gen = ptr.as_ref().generation;
         debug_assert!(
@@ -108,13 +107,13 @@ impl<'a, K, V> Block<'a, K, V> {
     }
 }
 
-pub struct Entry<K, V> {
+pub struct Entry<K: 'static, V: 'static> {
     pub generation: u32,
     pub key: K,
     pub value: V,
 }
 
-impl<K, V> Entry<K, V> {
+impl<K: 'static, V: 'static> Entry<K, V> {
     /// Hella unsafe, unspecified return lifetime
     ///
     /// If you call this, make sure to specify the right lifetime
@@ -132,13 +131,13 @@ impl<K, V> Entry<K, V> {
     }
 }
 
-pub struct ScopedMapBase<K: 'static, V: 'static, S = RandomState> {
+pub struct ScopedMapBase<K: 'static, V: 'static, S: 'static = RandomState> {
     pub(crate) block_arena: Arena<Block<'static, K, V>>,
     pub(crate) entry_arena: Arena<Entry<K, V>>,
     pub(crate) hasher: S,
 }
 
-pub struct ScopedMap<'a, K, V, S = RandomState> {
+pub struct ScopedMap<'a, K: 'static, V: 'static, S: 'static = RandomState> {
     pub(crate) generation: u32,
     pub(crate) block_arena: ArenaWrapper<'a, Block<'a, K, V>>,
     pub(crate) entry_arena: ArenaWrapper<'a, Entry<K, V>>,

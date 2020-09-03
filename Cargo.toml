@@ -11,3 +11,5 @@ ahash = "0.4.4"
 either = "1.6"
 typed-arena = {git = "https://github.com/mb64/rust-typed-arena.git"}
 
+[dev-dependencies]
+rand = {version = "0.7", features = ["small_rng"]}

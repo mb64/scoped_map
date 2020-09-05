@@ -76,7 +76,7 @@ impl<'a, T> ArenaWrapper<'a, T> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "benching")))]
 mod sanity {
     use super::*;
 

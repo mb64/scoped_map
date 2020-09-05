@@ -2,10 +2,9 @@
 
 use crate::arena::ArenaWrapper;
 use crate::*;
-use either::{Either, Left, Right};
 use std::borrow::Borrow;
-use std::fmt::Debug;
 use std::hash::{BuildHasher, Hash, Hasher};
+use std::mem;
 use typed_arena::{Arena, SubArenaBuilder};
 
 impl<K: 'static, V: 'static> Default for ScopedMapBase<K, V> {
@@ -64,7 +63,6 @@ impl<'a, K: 'static, V: 'static, S: 'static> ScopedMap<'a, K, V, S>
 where
     K: Hash + Eq,
     S: BuildHasher,
-    K: Debug,
 {
     pub fn lookup<'map, 'key, Q>(&'map self, key: &'key Q) -> Option<&'map V>
     where
@@ -73,70 +71,40 @@ where
     {
         let hash = Self::hash(&self.hasher, key);
         let entry = if let Some(block) = self.root.block() {
-            // SAFETY: root is always a valid reference, and sometimes a valid mutable reference
-            unsafe { &*block.as_ptr() }.get_entry_imm(hash)?
+            ItemRef::into_ref(block).get_entry_imm(hash)?
         } else if let Some(entry) = self.root.entry() {
-            // SAFETY: same as above
-            unsafe { &*entry.as_ptr() }
+            ItemRef::into_ref(entry)
         } else {
             debug_assert!(self.root.is_empty());
             return None;
         };
-        if key == entry.key.borrow() {
-            Some(&entry.value)
-        } else {
-            None
-        }
+        entry.lookup(key)
     }
 
     pub fn insert<'temp>(&'temp mut self, key: K, value: V) {
         let hash = Self::hash(&self.hasher, &key);
-        let (item, depth) =
+        let (mut item, depth): (&'temp mut ItemRep<'a, _, _>, _) =
             Self::get_item_mut(&mut self.root, self.generation, &self.block_arena, hash);
-        if let Some(entry) = item.entry() {
-            // SAFETY: OK to immutably borrow
-            if unsafe { entry.as_ref().key == key } {
-                // Update the entry with the new value
-
-                // SAFETY: lifetime appropriately constrained
-                let e: Either<&'temp _, &'temp mut _> =
-                    unsafe { Entry::from_ptr(entry, self.generation) };
-                match e {
-                    Left(_immutable) => {
-                        // Make a new entry -- we don't own this one
-                        let new_entry = self.entry_arena.alloc(Entry {
-                            generation: self.generation,
-                            key,
-                            value,
-                        });
-
-                        *item = ItemRep::from_entry(new_entry);
-                    }
-                    Right(mutable) => {
-                        // This entry belongs to our generation, update it in place
-                        mutable.key = key;
-                        mutable.value = value;
-                    }
-                }
+        let old_item = mem::take(item);
+        if let Some(old_entry) = old_item.entry() {
+            let old_hash = old_entry.hash(self.hasher);
+            if old_hash == hash {
+                // SAFETY: we use the right generation
+                unsafe { old_entry.set(key, value, &self.entry_arena, self.generation, item) };
             } else {
-                // SAFETY: OK to immutably borrow
-                let old_entry = unsafe { &*entry.as_ptr() };
-                let new_entry: &'a mut Entry<K, V> = self.entry_arena.alloc(Entry {
+                let new_entry: &'a mut Entry<'a, K, V> = self.entry_arena.alloc(Entry {
                     generation: self.generation,
                     key,
                     value,
+                    next: None,
                 });
                 // Need to make a block, and put both entries in it
-                let mut item = item;
                 let mut depth = depth;
                 let mut new_hash_rest = hash >> depth;
                 let mut old_hash_rest = Self::hash(&self.hasher, &old_entry.key) >> depth;
                 while depth < 64 {
-                    if new_hash_rest == old_hash_rest {
-                        eprintln!("{:?} and {:?} collided", &old_entry.key, &new_entry.key);
-                        todo!("TODO: handle hash collisions");
-                    }
-                    let mut new_block = self.block_arena.alloc(Block::empty(self.generation));
+                    let mut new_block: &'a mut Block<'a, _, _> =
+                        self.block_arena.alloc(Block::empty(self.generation));
                     let new_index = new_hash_rest as usize & (BLOCK_SIZE - 1);
                     let old_index = old_hash_rest as usize & (BLOCK_SIZE - 1);
                     if new_index == old_index {
@@ -144,28 +112,32 @@ where
                         old_hash_rest >>= BLOCK_BITS;
                         depth += BLOCK_BITS;
                         *item = ItemRep::from_block(new_block);
-                        // SAFETY: shouldn't even panic, we own this block -- we just made it
-                        item = unsafe {
-                            &mut Block::from_ptr(item.block().unwrap(), self.generation)
-                                .right_or_else(|_| unreachable!())
+                        // SAFETY: we use the right generation, and explicitly bound the lifetime
+                        // shouldn't even panic, we own this block -- we just made it
+                        let new_item: &'temp mut _ = unsafe {
+                            &mut ItemRef::promote(item.block().unwrap(), self.generation)
+                                .unwrap_or_else(|_| unreachable!())
                                 .entries[new_index]
                         };
-                    // continue
+                        item = new_item;
+                        continue;
                     } else {
-                        new_block.entries[old_index] = ItemRep::from_entry(old_entry);
+                        new_block.entries[old_index] =
+                            ItemRep::from_entry(ItemRef::into_ref(old_entry));
                         new_block.entries[new_index] = ItemRep::from_entry(new_entry);
                         *item = ItemRep::from_block(new_block);
                         return;
                     }
                 }
-                unreachable!("I think the collision check inside the loop should do it?");
+                unreachable!("Hashes are both unequal and equal: {} {}", hash, old_hash);
             }
         } else {
             debug_assert!(item.is_empty());
-            let new_entry: &'a mut Entry<K, V> = self.entry_arena.alloc(Entry {
+            let new_entry: &'a mut Entry<'a, K, V> = self.entry_arena.alloc(Entry {
                 generation: self.generation,
                 key,
                 value,
+                next: None,
             });
             *item = ItemRep::from_entry(new_entry);
         }
@@ -181,12 +153,6 @@ where
         key.hash(&mut hasher);
         hasher.finish()
     }
-
-    // #[inline]
-    // fn root(&self) -> &Block<'a, K, V> {
-    //     // SAFETY: root is always a valid reference, and sometimes a valid mutable reference
-    //     unsafe { self.root.as_ref() }
-    // }
 
     /// Returns the item slot that could be used to store an entry for that hash, and the amount to
     /// shift a hash by to get to that slot
@@ -205,24 +171,25 @@ where
         let mut shift_amt = 0;
         let mut item = root;
         loop {
-            let block = match item.block() {
+            let block: ItemRef<'temp, _> = match item.block() {
                 Some(block) => block,
                 None => return (item, shift_amt),
             };
-            // SAFETY: constrained to temporary lifetime
-            let is_mutable: Either<&'temp _, &'temp mut _> =
-                unsafe { Block::from_ptr(block, generation) };
-            match is_mutable {
-                Left(_) => {
+            // SAFETY: we use the right generation, and the lifetime is bounded to 'temp just above
+            match unsafe { ItemRef::promote(block, generation) } {
+                Ok(mutable_blk) => {
+                    // We own this block -- use it
+                    let index = rest_hash as usize & (BLOCK_SIZE - 1);
+                    item = &mut mutable_blk.entries[index];
+                    rest_hash >>= BLOCK_BITS;
+                    shift_amt += BLOCK_BITS;
+                    // continue
+                }
+                Err(_) => {
+                    // Don't own this block -- gotta copy
                     let (slot, new_shift_amt) =
                         Self::copying_insert(block_arena, generation, item, rest_hash);
                     return (slot, shift_amt + new_shift_amt);
-                }
-                Right(blk) => {
-                    let index = rest_hash as usize & (BLOCK_SIZE - 1);
-                    item = &mut blk.entries[index];
-                    rest_hash >>= BLOCK_BITS;
-                    shift_amt += BLOCK_BITS;
                 }
             }
         }
@@ -239,22 +206,22 @@ where
         let mut shift_amt = 0;
         loop {
             if let Some(block) = item.block() {
-                // SAFETY: references always safe, bounded by type annotation
-                let block_ref: &'temp Block<'a, K, V> = unsafe { &*block.as_ptr() };
                 // copy block
                 let new_block = block_arena.alloc(Block {
                     generation,
-                    entries: block_ref.entries.clone(),
+                    entries: block.entries.clone(), // memcpy
                 });
                 let index = rest_hash as usize & (BLOCK_SIZE - 1);
                 *item = ItemRep::from_block(new_block);
                 // recurse on the insides of the block
-                // SAFETY: should never panic, we just made this to be the right generation
-                item = unsafe {
-                    &mut Block::from_ptr(item.block().unwrap(), generation)
-                        .right_or_else(|_| unreachable!())
+                // SAFETY: we use the right generation and explicitly bound the lifetime
+                // should never even panic, we just made this
+                let new_item: &'temp mut _ = unsafe {
+                    &mut ItemRef::promote(item.block().unwrap(), generation)
+                        .unwrap_or_else(|_| unreachable!())
                         .entries[index]
                 };
+                item = new_item;
                 rest_hash >>= BLOCK_BITS;
                 shift_amt += BLOCK_BITS;
             } else {
@@ -267,24 +234,131 @@ where
 }
 
 impl<'a, K, V> Block<'a, K, V> {
-    fn get_entry_imm<'temp: 'a>(&'temp self, hash: u64) -> Option<&'temp Entry<K, V>> {
+    fn get_entry_imm<'temp: 'a>(&'temp self, hash: u64) -> Option<&'temp Entry<'a, K, V>> {
         let mut rest_hash = hash;
         let mut block = self;
         loop {
             let index = rest_hash as usize & BLOCK_SIZE - 1;
             let item: &'temp ItemRep<'a, K, V> = &block.entries[index];
             if let Some(new_block) = item.block() {
-                // SAFETY: block only reference valid blocks
-                block = unsafe { &*new_block.as_ptr() };
+                block = ItemRef::into_ref(new_block);
                 rest_hash >>= BLOCK_BITS;
             } else if let Some(entry) = item.entry() {
-                // SAFETY: blocks only reference valid entries, returned value cannot outlive 'a
-                return Some(unsafe { &*entry.as_ptr() });
+                return Some(ItemRef::into_ref(entry));
             } else {
-                // TODO: handle hash collisions
                 debug_assert!(item.is_empty());
                 return None;
             }
         }
+    }
+}
+
+impl<'a, K, V> Entry<'a, K, V> {
+    /// Gets the hash of this entry
+    fn hash<S>(&self, hasher: &S) -> u64
+    where
+        K: Hash,
+        S: BuildHasher,
+    {
+        let mut h = hasher.build_hasher();
+        self.key.hash(&mut h);
+        h.finish()
+    }
+
+    fn lookup<'temp, Q>(&'temp self, key: &Q) -> Option<&'temp V>
+    where
+        K: Borrow<Q>,
+        Q: Eq,
+    {
+        let mut entry = self;
+        loop {
+            if key == entry.key.borrow() {
+                return Some(&entry.value);
+            }
+            match entry.next {
+                Some(ref next) => entry = next,
+                None => return None,
+            }
+        }
+    }
+
+    /// Possibly mutates self if it's a unique ref, and puts the updated entry in `into`
+    ///
+    /// Safety: gotta pass the right generation
+    unsafe fn set(
+        self: ItemRef<'a, Self>,
+        key: K,
+        value: V,
+        arena: &ArenaWrapper<'a, Self>,
+        generation: u32,
+        into: &mut ItemRep<'a, K, V>,
+    ) where
+        K: Eq,
+    {
+        let mut result = None;
+        self.set_internal(key, value, arena, generation, &mut result);
+        *into = ItemRep::from_entry(ItemRef::into_ref(result.unwrap()));
+    }
+
+    /// Safety: gotta pass the right generation
+    #[allow(unused_unsafe)]
+    unsafe fn set_internal(
+        self: ItemRef<'a, Self>,
+        key: K,
+        value: V,
+        arena: &ArenaWrapper<'a, Self>,
+        generation: u32,
+        mut into: &mut Option<ItemRef<'a, Self>>,
+    ) where
+        K: Eq,
+    {
+        // Currently loops thru all owned entries, in case one's the same
+        // Might be faster to unconditionally add a link?
+        // TODO benchmark
+
+        // entry is always Some(...) when it's used
+        // might be a better way to use it?
+        let mut entry: Option<ItemRef<'a, Entry<'a, K, V>>> = Some(self);
+
+        let entry = loop {
+            match ItemRef::promote(entry.take().unwrap(), generation) {
+                Ok(mutable) => {
+                    if mutable.key == key {
+                        // Mutable, identical -- update in place
+                        mutable.value = value;
+                        mutable.key = key;
+                        *into = Some(ItemRef::from_mut(mutable));
+                        return;
+                    } else if let Some(next) = mutable.next.take() {
+                        // Mutable, has continuation -- loop on the continuation
+                        *into = Some(ItemRef::from_mut(mutable));
+                        // SAFETY: the reference is unique, we just put a mutable reference there
+                        into = unsafe {
+                            &mut ItemRef::promote_mut(into.as_mut().unwrap(), generation)
+                                .unwrap()
+                                .next
+                        };
+                        entry = Some(next);
+                        continue;
+                    } else {
+                        // end of chain -- add new link
+                        break ItemRef::from_mut(mutable);
+                    }
+                }
+                Err(entry_again) => {
+                    // Immutable -- add new link
+                    break entry_again;
+                }
+            }
+        };
+        // add new link
+        let new_entry = arena.alloc(Entry {
+            generation,
+            key,
+            value,
+            next: Some(entry),
+        });
+        *into = Some(ItemRef::from_mut(new_entry));
+        return;
     }
 }

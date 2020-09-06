@@ -12,8 +12,16 @@ typed-arena = {git = "https://github.com/mb64/rust-typed-arena.git"}
 rand = { version = "0.7", features = ["small_rng"] }
 criterion = "0.3"
 criterion-macro = "0.3"
+hayami = "0.3"
+im = "15.0"
 im-rc = "15.0"
+indexmap = "1.6"
 zipf = "6.1"
 
 [features]
 benching = []
+
+[[bench]]
+name = "lookup_insert"
+path = "benches/lookup_insert.rs"
+harness = false

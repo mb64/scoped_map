@@ -20,7 +20,7 @@ pub(crate) trait Map<'a, K, V> {
     fn new_scope(&'a self) -> Self;
 }
 
-impl<'a, K, V> Map<'a, K, V> for ScopedMap<'a, K, V>
+impl<'a, K: 'static, V: 'static> Map<'a, K, V> for ScopedMap<'a, K, V>
 where
     K: Eq + Hash,
 {

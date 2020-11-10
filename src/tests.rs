@@ -174,6 +174,29 @@ mod handwritten {
         assert_eq!(map.lookup(&key), Some(&uniq_val));
     }
 
+    /// Tests variance of the map, and that you can store references in it which get invalidated
+    /// after the scope
+    #[test]
+    fn arena_test() {
+        use typed_arena::{Arena, SubArena};
+        let my_arena = Arena::new();
+        let base = ScopedMapBase::<i32, &'static mut str>::new();
+        let mut map = base.make_map();
+        map.insert(1, my_arena.alloc_str("one"));
+        map.insert(2, my_arena.alloc_str("two"));
+        {
+            let sub_arena = SubArena::new(&my_arena);
+            let mut sub_map = map.new_scope();
+            sub_map.insert(5, sub_arena.alloc_str("five"));
+            sub_map.insert(1, sub_arena.alloc_str("One!"));
+            assert_eq!(sub_map.lookup(&2).map(|x| &**x), Some("two"));
+            assert_eq!(sub_map.lookup(&1).map(|x| &**x), Some("One!"));
+            assert_eq!(map.lookup(&1).map(|x| &**x), Some("one"));
+        }
+        assert_eq!(map.lookup(&1).map(|x| &**x), Some("one"));
+        assert_eq!(map.lookup(&5), None);
+    }
+
     #[test]
     fn another_simple_test() {
         let base = ScopedMapBase::new();

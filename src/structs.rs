@@ -13,7 +13,7 @@ use typed_arena::Arena;
 ///
 /// It's stored in `ItemRep<'a>` using a tagged pointer, but accessible with the `.item()` and
 /// `.set()` methods
-pub struct ItemRep<'a, K: 'static, V: 'static> {
+pub struct ItemRep<'a, K: 'a, V: 'a> {
     ptr: *mut (),
     _marker: PhantomData<(&'a Block<'a, K, V>, &'a Entry<'a, K, V>)>,
 }
@@ -149,7 +149,7 @@ pub trait Item {
     fn generation(&self) -> u32;
 }
 
-pub struct Block<'a, K: 'static, V: 'static> {
+pub struct Block<'a, K, V> {
     pub generation: u32,
     pub entries: [ItemRep<'a, K, V>; BLOCK_SIZE],
 }
@@ -160,7 +160,7 @@ impl<'a, K, V> Item for Block<'a, K, V> {
     }
 }
 
-impl<'a, K: 'static, V: 'static> Block<'a, K, V> {
+impl<'a, K, V> Block<'a, K, V> {
     pub fn empty(generation: u32) -> Self {
         let entries = <[ItemRep<'a, K, V>; BLOCK_SIZE] as Default>::default();
         Self {
@@ -170,7 +170,7 @@ impl<'a, K: 'static, V: 'static> Block<'a, K, V> {
     }
 }
 
-pub struct Entry<'a, K: 'static, V: 'static> {
+pub struct Entry<'a, K: 'a, V: 'a> {
     pub generation: u32,
     pub key: K,
     pub value: V,
@@ -184,13 +184,13 @@ impl<'a, K, V> Item for Entry<'a, K, V> {
     }
 }
 
-pub struct ScopedMapBase<K: 'static, V: 'static, S: 'static = RandomState> {
+pub struct ScopedMapBase<K: 'static, V: 'static, S = RandomState> {
     pub(crate) block_arena: Arena<Block<'static, K, V>>,
     pub(crate) entry_arena: Arena<Entry<'static, K, V>>,
     pub(crate) hasher: S,
 }
 
-pub struct ScopedMap<'a, K: 'static, V: 'static, S: 'static = RandomState> {
+pub struct ScopedMap<'a, K: 'a, V: 'a, S = RandomState> {
     pub(crate) generation: u32,
     pub(crate) block_arena: ArenaWrapper<'a, Block<'a, K, V>>,
     pub(crate) entry_arena: ArenaWrapper<'a, Entry<'a, K, V>>,

@@ -7,19 +7,19 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem;
 use typed_arena::{Arena, SubArenaBuilder};
 
-impl<K: 'static, V: 'static> Default for ScopedMapBase<K, V> {
+impl<K, V> Default for ScopedMapBase<K, V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: 'static, V: 'static> ScopedMapBase<K, V> {
+impl<K, V> ScopedMapBase<K, V> {
     pub fn new() -> Self {
         Self::with_hasher(Default::default())
     }
 }
 
-impl<K: 'static, V: 'static, S: BuildHasher> ScopedMapBase<K, V, S> {
+impl<K, V, S: BuildHasher> ScopedMapBase<K, V, S> {
     pub fn with_hasher(hasher: S) -> Self {
         Self {
             block_arena: Arena::new(),
@@ -59,7 +59,7 @@ impl<'a, K, V> ScopedMap<'a, K, V> {
     }
 }
 
-impl<'a, K: 'static, V: 'static, S: 'static> ScopedMap<'a, K, V, S>
+impl<'a, K, V, S: 'a> ScopedMap<'a, K, V, S>
 where
     K: Hash + Eq,
     S: BuildHasher,

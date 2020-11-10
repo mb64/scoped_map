@@ -92,5 +92,6 @@ Sparse block cons:
 TODO:
  * bench a `LinkedList<'a, std::collections::HashMap>`
  * bench a `std::collections::HashMap` with just `clone`ing it
- * Do the map contents really need to be `'static`?
+ * ~~Do the map contents really need to be `'static`?~~ No they don't; updated
+   in 0.2.0
  * Try different block sizes?

@@ -161,19 +161,6 @@ impl<'a, K, V> Item for Block<'a, K, V> {
 }
 
 impl<'a, K: 'static, V: 'static> Block<'a, K, V> {
-    ///// Promotes an immutable reference to a mutable one, if it's unique
-    ///// A reference with the same generation is guaranteed unique
-    /////
-    ///// Safety: gotta pass the right generation, and explicitly bound result lifetime
-    //pub unsafe fn promote<'temp>(&'temp self, generation: u32) -> Option<&'temp mut Self> {
-    //    debug_assert!(generation >= self.generation);
-    //    if self.generation == generation {
-    //        Some(&mut *(self as *const _ as *mut _))
-    //    } else {
-    //        None
-    //    }
-    //}
-
     pub fn empty(generation: u32) -> Self {
         let entries = <[ItemRep<'a, K, V>; BLOCK_SIZE] as Default>::default();
         Self {
@@ -195,20 +182,6 @@ impl<'a, K, V> Item for Entry<'a, K, V> {
     fn generation(&self) -> u32 {
         self.generation
     }
-}
-
-impl<'a, K, V> Entry<'a, K, V> {
-    ///// Promotes an immutable reference to a mutable one, if it's unique
-    ///// A reference with the same generation is guaranteed unique
-    /////
-    ///// Safety: gotta pass the right generation, and explicitly bound result lifetime
-    //pub unsafe fn promote<'temp>(&'temp self, generation: u32) -> Option<&'temp mut Self> {
-    //    if self.generation == generation {
-    //        Some(&mut *(self as *const _ as *mut _))
-    //    } else {
-    //        None
-    //    }
-    //}
 }
 
 pub struct ScopedMapBase<K: 'static, V: 'static, S: 'static = RandomState> {
